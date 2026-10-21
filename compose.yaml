@@ -6,7 +6,7 @@
 # da stack.env.example. stack.env contiene segreti e NON va mai nel repository.
 services:
   gitea-watcher:
-    image: ghcr.io/canada87/gitea-watcher:latest   # meglio fissare un tag, es. :0.1.0
+    image: ghcr.io/canada87/gitea-watcher:0.1.0
     container_name: gitea-watcher
     restart: unless-stopped
     env_file: stack.env
