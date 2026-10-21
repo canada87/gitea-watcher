@@ -6,7 +6,7 @@ description: Avvisa se ci sono problemi con i mirror Gitea o se il watcher non r
 mode: queued
 triggers:
   - trigger: state
-    entity_id: binary_sensor.gitea_watcher_problemi
+    entity_id: sensor.gitea_watcher_dettaglio_problemi
     attribute: problems
     id: problemi
   - trigger: state
@@ -28,7 +28,7 @@ actions:
             data:
               title: "Gitea: mirror da controllare"
               message: >-
-                {{ state_attr('binary_sensor.gitea_watcher_problemi', 'problems') | join('\n') }}
+                {{ state_attr('sensor.gitea_watcher_dettaglio_problemi', 'problems') | join('\n') }}
       - conditions:
           - condition: trigger
             id: muto

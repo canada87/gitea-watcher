@@ -33,6 +33,14 @@ rest:
           {{ value_json.totals.min_token_days
              if value_json.totals.min_token_days is not none else 'unknown' }}
         unit_of_measurement: "giorni"
+      # Nei sensori REST gli attributi (json_attributes) sono ammessi solo sui
+      # sensori normali, non su quelli binari: il dettaglio dei problemi sta qui.
+      - name: "Gitea watcher dettaglio problemi"
+        unique_id: gitea_watcher_problem_detail
+        value_template: "{{ value_json.problems | length }}"
+        json_attributes:
+          - problems
+          - notes
       - name: "Gitea watcher ultimo controllo"
         unique_id: gitea_watcher_last_run
         device_class: timestamp
@@ -42,9 +50,6 @@ rest:
         unique_id: gitea_watcher_problems
         device_class: problem
         value_template: "{{ not value_json.healthy }}"
-        json_attributes:
-          - problems
-          - notes
 
 # Per forzare un controllo subito (ad esempio da un pulsante in dashboard):
 # azione  rest_command.gitea_watcher_refresh
