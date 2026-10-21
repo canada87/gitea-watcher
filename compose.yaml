@@ -1,11 +1,12 @@
-# Stack per Portainer (o `docker compose up -d --build` da riga di comando).
+# Stack per Portainer (Web editor) o `docker compose up -d` da riga di comando.
+# L'immagine viene costruita da GitHub Actions e scaricata da ghcr.io: non serve
+# costruirla qui. Per aggiornare cambia il tag (es. 0.1.0 -> 0.2.0) e ridistribuisci.
 # Le variabili vengono lette da stack.env: in Portainer si incollano nella
 # sezione "Environment variables" dello stack, da CLI si crea il file a partire
 # da stack.env.example. stack.env contiene segreti e NON va mai nel repository.
 services:
   gitea-watcher:
-    build: .
-    image: gitea-watcher:0.1
+    image: ghcr.io/canada87/gitea-watcher:latest   # meglio fissare un tag, es. :0.1.0
     container_name: gitea-watcher
     restart: unless-stopped
     env_file: stack.env

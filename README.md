@@ -71,28 +71,56 @@ Se l'utente Gitea del token non vede le repo private di un altro utente, in
 
 ## Installazione
 
+L'immagine Docker viene costruita e pubblicata da GitHub Actions su GitHub
+Packages: `ghcr.io/canada87/gitea-watcher`. Nessuna build sulla VM e nessun
+accesso di Portainer alla repo.
+
+Prima volta: dopo il primo push su `main`, apri la pagina del pacchetto
+(profilo GitHub -> Packages -> `gitea-watcher` -> Package settings) e imposta la
+visibilità su **Public**, altrimenti la VM dovrebbe fare `docker login ghcr.io`.
+L'immagine non contiene segreti (la configurazione arriva dall'ambiente).
+
 ### Da Portainer (consigliato)
 
-1. Pubblica questa cartella su GitHub (repo privato va bene).
-2. Portainer → Stacks → Add stack → **Repository**: URL della repo, riferimento
-   `refs/heads/main`, file `compose.yaml`. Per un repo privato attiva
-   l'autenticazione con un token GitHub di sola lettura su quella repo.
-3. In **Environment variables** incolla il contenuto di `stack.env.example`
-   compilato (modalità "Advanced"). Portainer lo rende disponibile al
-   container tramite `env_file: stack.env`.
-4. Deploy. Portainer costruisce l'immagine con il `Dockerfile`.
+1. Stacks -> Add stack -> **Web editor**, nome `gitea-watcher`.
+2. Incolla il contenuto di `compose.yaml`. Meglio sostituire `:latest` con un
+   tag fisso (vedi "Rilasci"), come per qualsiasi servizio.
+3. In **Environment variables** (modalità "Advanced") incolla il contenuto di
+   `stack.env.example` compilato. Portainer lo rende disponibile al container
+   tramite `env_file: stack.env`.
+4. Deploy. Per aggiornare: cambia il tag nel compose e ridistribuisci con
+   "Re-pull image".
 
 ### Da riga di comando
 
 ```bash
-git clone <repo> gitea-watcher && cd gitea-watcher
-cp stack.env.example stack.env && nano stack.env && chmod 600 stack.env
-docker compose up -d --build
+mkdir gitea-watcher && cd gitea-watcher
+# copia qui compose.yaml e crea stack.env a partire da stack.env.example
+nano stack.env && chmod 600 stack.env
+docker compose up -d
 docker compose logs -f
 ```
 
+Per provare modifiche locali senza passare da GitHub:
+`docker build -t ghcr.io/canada87/gitea-watcher:dev .` e metti `:dev` nel compose.
+
 L'API è sulla porta **8765** della VM. Tienila raggiungibile solo da LAN e
 Tailscale: contiene i nomi delle repo, anche private.
+
+## Rilasci
+
+Il workflow `.github/workflows/docker.yml` esegue i test e prova l'immagine
+(si avvia, risponde su `/health`, `/status` rifiuta le richieste senza token,
+non gira come root). Se è tutto a posto pubblica:
+
+| Evento | Tag pubblicati |
+|--------|----------------|
+| push su `main` | `latest`, `sha-xxxxxxx` |
+| tag `v0.1.0` | `0.1.0`, `0.1`, `latest` (oltre a `sha-...`) |
+| pull request | niente, solo test |
+
+Per fare un rilascio: `git tag v0.1.0 && git push --tags`. Dependabot propone
+ogni mese gli aggiornamenti delle action e dell'immagine base.
 
 ## Home Assistant
 

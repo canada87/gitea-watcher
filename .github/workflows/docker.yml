@@ -1,0 +1,104 @@
+name: Immagine Docker
+
+# - pull request:  test e prova dell'immagine, senza pubblicare
+# - push su main:  pubblica ghcr.io/<utente>/gitea-watcher:latest (e :sha-xxxxxxx)
+# - tag vX.Y.Z:    pubblica anche :X.Y.Z e :X.Y   (git tag v0.1.0 && git push --tags)
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test
+        run: python3 -m unittest discover -s tests -v
+
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # serve per pubblicare su ghcr.io
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Login a ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Nomi e etichette dell'immagine
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+
+      - name: Build locale per la prova
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: gitea-watcher:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Prova dell'immagine
+        run: |
+          set -eu
+          docker run -d --name watcher -p 18080:8080 \
+            -e GITEA_URL=http://127.0.0.1:1 -e API_TOKEN=prova -e GITEA_TOKEN=prova \
+            -e SOURCE_1_NAME=prova -e SOURCE_1_GH_TOKEN=prova \
+            gitea-watcher:ci
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/health >/dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          if [ "$ok" != 1 ]; then docker logs watcher; echo "il servizio non risponde"; exit 1; fi
+          echo "health: ok"
+          test "$(docker exec watcher id -u)" != "0"          # non gira come root
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS -H "Authorization: Bearer prova" http://127.0.0.1:18080/status -o status.json 2>/dev/null; then ok=1; break; fi
+            sleep 1
+          done
+          if [ "$ok" != 1 ]; then docker logs watcher; echo "/status non risponde"; exit 1; fi
+          python3 -c "import json; d=json.load(open('status.json')); print('status:', d['totals'])"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/status)" = 401   # senza token e' rifiutato
+          docker exec watcher test -f /data/status.json        # /data e' scrivibile
+          docker logs watcher
+          docker rm -f watcher
+
+      - name: Pubblica su ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha

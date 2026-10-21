@@ -1,0 +1,12 @@
+# Tiene aggiornate le action del workflow e l'immagine base del Dockerfile.
+# Apre una pull request al mese solo se c'e' qualcosa da aggiornare.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
