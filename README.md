@@ -3,8 +3,9 @@
 Piccolo servizio che tiene d'occhio i mirror di Gitea rispetto a GitHub e
 espone lo stato via HTTP, così Home Assistant può mostrarlo e avvisare.
 
-Versione 0.1: **sola lettura**. Non crea, modifica né cancella niente né su
-GitHub né su Gitea.
+Per default è in **sola lettura**: non crea, modifica né cancella niente né su
+GitHub né su Gitea. Dalla versione 0.2 può anche importare da solo le repo
+nuove come mirror (vedi "Import automatico"), ma solo se lo attivi tu.
 
 ## Cosa controlla
 
@@ -40,9 +41,10 @@ curl -H "Authorization: Bearer $API_TOKEN" http://IP_VM:8765/status
 ```
 
 I campi principali di `/status`: `healthy` (booleano), `totals`
-(`github_repos`, `gitea_repos`, `missing`, `stale`, `source_errors`,
-`min_token_days`), `problems` (frasi pronte da mostrare), `notes` e il dettaglio
-per sorgente in `sources`. Le liste lunghe sono troncate a 50 elementi.
+(`github_repos`, `gitea_repos`, `missing`, `stale`, `imported`, `source_errors`,
+`min_token_days`), `problems` (frasi pronte da mostrare), `notes`,
+`recent_imports` (ultimi 20 import automatici, con data) e il dettaglio per
+sorgente in `sources`. Le liste lunghe sono troncate a 50 elementi.
 
 ## Configurazione
 
@@ -64,10 +66,45 @@ Tutto da variabili d'ambiente. Parti da `stack.env.example`. Il file reale
 | `TOKEN_WARN_DAYS` | no | Default 30 |
 | `VERIFY_TLS` | no | `false` solo se `GITEA_URL` è https con certificato non valido |
 | `LOG_LEVEL` | no | Default `INFO` |
+| `EXCLUDE_REPOS` | no | Repo da ignorare, separate da virgola: `nome` (vale per tutte le sorgenti) oppure `sorgente/nome`. Non risultano mai mancanti e non vengono importate |
+| `AUTO_IMPORT` | no | `true` per importare automaticamente le repo mancanti. Default spento |
+| `GITEA_IMPORT_TOKEN` | con `AUTO_IMPORT` | Token Gitea con permesso di scrittura sui repository, usato solo per creare i mirror |
+| `AUTO_IMPORT_MAX_PER_RUN` | no | Repo importate al massimo per controllo. Default 5 |
+| `AUTO_IMPORT_MAX_MB` | no | Le repo più grandi non vengono importate da sole (le segnala). Default 500, `0` = nessun limite |
+| `AUTO_IMPORT_MIRROR_INTERVAL` | no | Intervallo di aggiornamento dei nuovi mirror. Default `24h0m0s` |
 
 Se l'utente Gitea del token non vede le repo private di un altro utente, in
 `/status` quelle repo risulteranno "mancanti": è il segnale per usare
 `SOURCE_n_GITEA_TOKEN` con il token del proprietario.
+
+## Import automatico
+
+Spento di default. Con `AUTO_IMPORT=true`, a ogni controllo il watcher crea in
+Gitea un mirror per ogni repo che c'è su GitHub e non in Gitea:
+
+- mirror **privato**, solo codice (niente issue, pull request, wiki, release né LFS),
+  con l'intervallo `AUTO_IMPORT_MIRROR_INTERVAL`;
+- proprietario in Gitea = `SOURCE_n_GITEA_OWNER`, credenziali = `SOURCE_n_GH_TOKEN`;
+- repo archiviate escluse, fork inclusi, come nell'import iniziale;
+- al massimo `AUTO_IMPORT_MAX_PER_RUN` repo per controllo: se ne compaiono molte
+  insieme il resto arriva ai controlli successivi (e intanto compaiono tra i
+  problemi);
+- le repo oltre `AUTO_IMPORT_MAX_MB` non vengono importate: compaiono tra i
+  problemi con la dimensione, per decidere a mano;
+- dopo 5 tentativi falliti nello stesso controllo si ferma; con un token di
+  import non valido si ferma al primo errore;
+- non cancella e non modifica mai nulla di esistente: se il repo esiste già
+  (risposta 409) lo considera a posto.
+
+Cosa vedi: le repo importate compaiono in `notes` e in `recent_imports` di
+`/status`; gli errori di import sono in `problems`.
+
+Il token di import (`GITEA_IMPORT_TOKEN`) è separato da `GITEA_TOKEN`, che
+resta di sola lettura. Va creato in Gitea (Impostazioni -> Applicazioni) con
+**repository: Lettura e Scrittura** e, per creare repo dentro le organizzazioni,
+dall'utente che ne è proprietario (o amministratore). Per creare un mirror
+Gitea salva il token GitHub nella configurazione del mirror, come già avviene
+per quelli importati a mano.
 
 ## Installazione
 
@@ -143,6 +180,10 @@ ogni mese gli aggiornamenti delle action e dell'immagine base.
 - Il container gira come utente non privilegiato e con limite di 128 MB.
 - Usa token GitHub **fine-grained di sola lettura** e un token Gitea di sola
   lettura: anche in caso di fuga non permettono di scrivere.
+- L'unico token con scrittura è `GITEA_IMPORT_TOKEN`, richiesto solo se accendi
+  `AUTO_IMPORT`; permette di creare repo in Gitea, non di modificare o cancellare
+  quelle esistenti tramite il watcher. Il codice non contiene alcuna chiamata di
+  modifica o cancellazione.
 
 ## Sviluppo
 
@@ -156,5 +197,5 @@ successivo).
 
 ## Prossimi passi
 
-- **0.2**: importare automaticamente le repo nuove come mirror (richiede un
-  token Gitea con permesso di scrittura, per questo è separato dalla 0.1).
+Nessuno in programma. Idee: segnalare i mirror il cui token GitHub è scaduto
+come causa del blocco, e un sensore Home Assistant per `recent_imports`.

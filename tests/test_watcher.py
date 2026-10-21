@@ -20,14 +20,16 @@ import watcher  # noqa: E402
 NOW = datetime(2026, 10, 21, 12, 0, 0, tzinfo=timezone.utc)
 GH_TOKEN = "fake-github-token"
 GT_TOKEN = "fake-gitea-token"
+IMPORT_TOKEN = "fake-import-token"
 
 
 def iso(dt):
     return dt.isoformat().replace("+00:00", "Z")
 
 
-def gh_repo(name, archived=False):
-    return {"name": name, "archived": archived, "fork": False, "size": 10}
+def gh_repo(name, archived=False, size=10):
+    return {"name": name, "archived": archived, "fork": False, "size": size,
+            "clone_url": f"https://github.com/org1/{name}.git"}
 
 
 def gt_repo(name, hours_ago=2, mirror=True, never=False):
@@ -48,6 +50,16 @@ class FakeHandler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self):
+        srv = self.server
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        srv.posts.append({"path": urlparse(self.path).path, "auth": self.headers.get("Authorization"),
+                          "body": body})
+        if self.headers.get("Authorization") != (srv.post_auth or srv.expected_auth):
+            return self._send(401, {"message": "token is required"})
+        code, reply = srv.post_replies.get(body.get("repo_name"), (201, {}))
+        self._send(code, reply)
 
     def do_GET(self):
         srv = self.server
@@ -70,8 +82,10 @@ class FakeHandler(BaseHTTPRequestHandler):
 class Fake(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, expected_auth, routes, cap=100, extra_headers=None, send_total=False):
+    def __init__(self, expected_auth, routes, cap=100, extra_headers=None, send_total=False,
+                 post_auth=None, post_replies=None):
         super().__init__(("127.0.0.1", 0), FakeHandler)
+        self.post_auth, self.post_replies, self.posts = post_auth, post_replies or {}, []
         self.expected_auth, self.routes, self.cap = expected_auth, routes, cap
         self.extra_headers, self.send_total, self.hits = extra_headers or {}, send_total, []
         threading.Thread(target=self.serve_forever, daemon=True).start()
@@ -215,6 +229,158 @@ class CheckTests(unittest.TestCase):
             watcher.check_source = original
         self.assertFalse(status["healthy"])
         self.assertIn("errore interno: RuntimeError", status["problems"][0])
+
+
+class AutoImportTests(unittest.TestCase):
+    """Import automatico dei repo mancanti (AUTO_IMPORT=true)."""
+
+    def setUp(self):
+        self.servers = []
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        for s in self.servers:
+            s.stop()
+        self.tmp.cleanup()
+
+    def setup_run(self, gh_repos, gt_repos, post_replies=None, **cfg_kw):
+        gh = Fake(f"Bearer {GH_TOKEN}", {"/orgs/org1/repos": gh_repos})
+        gt = Fake(f"token {GT_TOKEN}", {"/api/v1/orgs/org1/repos": gt_repos}, cap=50, send_total=True,
+                  post_auth=f"token {IMPORT_TOKEN}", post_replies=post_replies)
+        self.servers += [gh, gt]
+        kw = dict(auto_import=True, import_token=IMPORT_TOKEN, data_dir=self.tmp.name)
+        kw.update(cfg_kw)
+        cfg, _ = make_cfg(gh.url, gt.url, **kw)
+        return cfg, gt
+
+    def run_once(self, cfg, state=None):
+        return watcher.run_check(cfg, state or watcher.State(self.tmp.name))
+
+    def test_disabled_by_default_does_not_write(self):
+        cfg, gt = self.setup_run([gh_repo("a"), gh_repo("b")], [gt_repo("a")], auto_import=False)
+        status = self.run_once(cfg)
+        self.assertEqual(gt.posts, [])
+        self.assertEqual(status["sources"]["org1"]["missing"], ["b"])
+        self.assertFalse(status["auto_import"])
+        self.assertFalse(status["healthy"])
+
+    def test_imports_missing_as_private_code_only_mirrors(self):
+        cfg, gt = self.setup_run([gh_repo("a"), gh_repo("c"), gh_repo("b")], [gt_repo("a")])
+        status = self.run_once(cfg)
+        self.assertEqual([p["body"]["repo_name"] for p in gt.posts], ["b", "c"])
+        post = gt.posts[0]
+        self.assertEqual(post["path"], "/api/v1/repos/migrate")
+        self.assertEqual(post["auth"], f"token {IMPORT_TOKEN}")
+        body = post["body"]
+        self.assertEqual(body["clone_addr"], "https://github.com/org1/b.git")
+        self.assertEqual((body["service"], body["auth_token"], body["repo_owner"]),
+                         ("github", GH_TOKEN, "org1"))
+        self.assertTrue(body["mirror"] and body["private"])
+        self.assertEqual(body["mirror_interval"], "24h0m0s")
+        for key in ("lfs", "wiki", "issues", "pull_requests", "labels", "milestones", "releases"):
+            self.assertIs(body[key], False, key)
+        src = status["sources"]["org1"]
+        self.assertEqual((src["imported"], src["missing"], src["gitea_total"]), (["b", "c"], [], 3))
+        self.assertEqual(status["totals"]["imported"], 2)
+        self.assertTrue(status["healthy"])
+        self.assertIn("importate 2 repo", status["notes"][0])
+        self.assertEqual([i["repo"] for i in status["recent_imports"]], ["b", "c"])
+        blob = json.dumps(status)
+        for secret in (GH_TOKEN, GT_TOKEN, IMPORT_TOKEN):
+            self.assertNotIn(secret, blob)
+
+    def test_limit_per_run_leaves_the_rest_for_next_run(self):
+        cfg, gt = self.setup_run([gh_repo(x) for x in "abcd"], [], import_max=2)
+        status = self.run_once(cfg)
+        self.assertEqual([p["body"]["repo_name"] for p in gt.posts], ["a", "b"])
+        self.assertEqual(status["sources"]["org1"]["missing"], ["c", "d"])
+        self.assertFalse(status["healthy"])   # restano da importare: lo si vede
+
+    def test_too_large_is_not_imported_and_is_reported(self):
+        cfg, gt = self.setup_run([gh_repo("small"), gh_repo("huge", size=600 * 1024)], [], import_max_mb=500)
+        status = self.run_once(cfg)
+        self.assertEqual([p["body"]["repo_name"] for p in gt.posts], ["small"])
+        self.assertEqual(status["sources"]["org1"]["too_large"], [{"name": "huge", "mb": 600}])
+        self.assertTrue(any("troppo grandi" in p and "huge (600 MB)" in p for p in status["problems"]))
+
+    def test_size_limit_zero_means_no_limit(self):
+        cfg, gt = self.setup_run([gh_repo("huge", size=600 * 1024)], [], import_max_mb=0)
+        self.run_once(cfg)
+        self.assertEqual(len(gt.posts), 1)
+
+    def test_excluded_repos_are_neither_missing_nor_imported(self):
+        cfg, gt = self.setup_run([gh_repo("a"), gh_repo("secret"), gh_repo("tmp")], [],
+                                 exclude=frozenset({"secret", "org1/tmp"}))
+        status = self.run_once(cfg)
+        self.assertEqual([p["body"]["repo_name"] for p in gt.posts], ["a"])
+        self.assertTrue(status["healthy"])
+
+    def test_exclusion_applies_even_when_auto_import_is_off(self):
+        cfg, gt = self.setup_run([gh_repo("a"), gh_repo("secret")], [gt_repo("a")],
+                                 auto_import=False, exclude=frozenset({"secret"}))
+        self.assertTrue(self.run_once(cfg)["healthy"])
+
+    def test_archived_repos_are_not_imported(self):
+        cfg, gt = self.setup_run([gh_repo("old", archived=True)], [])
+        self.run_once(cfg)
+        self.assertEqual(gt.posts, [])
+
+    def test_already_exists_409_is_not_an_error(self):
+        cfg, gt = self.setup_run([gh_repo("a")], [], post_replies={"a": (409, {"message": "exists"})})
+        status = self.run_once(cfg)
+        self.assertTrue(status["healthy"])
+        self.assertEqual(status["sources"]["org1"]["imported"], [])
+
+    def test_failure_is_reported_and_other_repos_continue(self):
+        cfg, gt = self.setup_run([gh_repo("a"), gh_repo("b")], [],
+                                 post_replies={"a": (422, {"message": f"boom {GH_TOKEN}"})})
+        status = self.run_once(cfg)
+        src = status["sources"]["org1"]
+        self.assertEqual(src["imported"], ["b"])
+        self.assertEqual(src["import_failed"][0]["name"], "a")
+        self.assertEqual(src["missing"], ["a"])
+        self.assertTrue(any("import automatico fallito per a" in p for p in status["problems"]))
+        self.assertNotIn(GH_TOKEN, json.dumps(status))
+
+    def test_invalid_import_token_stops_everything(self):
+        cfg, gt = self.setup_run([gh_repo("a"), gh_repo("b")], [], import_token="token-sbagliato")
+        status = self.run_once(cfg)
+        self.assertEqual(len(gt.posts), 1)     # al primo 401 non insiste
+        self.assertEqual(status["sources"]["org1"]["imported"], [])
+        self.assertFalse(status["healthy"])
+        self.assertNotIn("token-sbagliato", json.dumps(status))
+
+    def test_recent_imports_survive_between_runs(self):
+        cfg, gt = self.setup_run([gh_repo("a")], [])
+        state = watcher.State(self.tmp.name)
+        self.run_once(cfg, state)
+        gt.routes["/api/v1/orgs/org1/repos"] = [gt_repo("a")]
+        status = self.run_once(cfg, state)
+        self.assertEqual([i["repo"] for i in status["recent_imports"]], ["a"])
+        self.assertEqual(status["totals"]["imported"], 0)
+
+    def test_config_options(self):
+        base = ConfigTests.BASE
+        cfg = watcher.load_config(dict(base))
+        self.assertEqual((cfg.auto_import, cfg.import_max, cfg.import_max_mb, cfg.import_interval),
+                         (False, 5, 500, "24h0m0s"))
+        on = dict(base, AUTO_IMPORT="true", GITEA_IMPORT_TOKEN="w", AUTO_IMPORT_MAX_PER_RUN="3",
+                  AUTO_IMPORT_MAX_MB="0", AUTO_IMPORT_MIRROR_INTERVAL="12h0m0s",
+                  EXCLUDE_REPOS=" Foo, me/Bar ,")
+        cfg = watcher.load_config(on)
+        self.assertEqual((cfg.auto_import, cfg.import_token, cfg.import_max, cfg.import_max_mb),
+                         (True, "w", 3, 0))
+        self.assertEqual(cfg.exclude, frozenset({"foo", "me/bar"}))
+
+    def test_config_errors(self):
+        base = ConfigTests.BASE
+        with self.assertRaises(watcher.ConfigError) as ctx:
+            watcher.load_config(dict(base, AUTO_IMPORT="true"))
+        self.assertIn("GITEA_IMPORT_TOKEN", str(ctx.exception))
+        for key, value in (("AUTO_IMPORT_MAX_PER_RUN", "0"), ("AUTO_IMPORT_MAX_MB", "-1"),
+                           ("AUTO_IMPORT_MIRROR_INTERVAL", "ogni giorno")):
+            with self.assertRaises(watcher.ConfigError, msg=key):
+                watcher.load_config(dict(base, **{key: value}))
 
 
 class ParsingTests(unittest.TestCase):
