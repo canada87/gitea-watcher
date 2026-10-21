@@ -52,7 +52,7 @@ Tutto da variabili d'ambiente. Parti da `stack.env.example`. Il file reale
 | Variabile | Obbligatoria | Descrizione |
 |-----------|--------------|-------------|
 | `GITEA_URL` | sì | URL di Gitea raggiungibile **dal container** (IP e porta della VM, non `localhost`) |
-| `GITEA_TOKEN` | sì (o per sorgente) | Token Gitea di sola lettura: permessi `read:repository` e `read:organization` |
+| `GITEA_TOKEN` | sì (o per sorgente) | Token Gitea di sola lettura: permessi `read:repository`, `read:organization` e `read:user` |
 | `API_TOKEN` | sì | Segreto che Home Assistant manda come `Bearer` |
 | `SOURCE_n_NAME` | sì | Nome della sorgente (univoco), n da 1 a 50 |
 | `SOURCE_n_GH_TOKEN` | sì | Token GitHub fine-grained, solo `Contents: read` |
