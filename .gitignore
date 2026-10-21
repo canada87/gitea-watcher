@@ -12,3 +12,6 @@ __pycache__/
 # dati locali
 data/
 status.json
+
+# file di lavoro di Claude
+Claude outputs/
