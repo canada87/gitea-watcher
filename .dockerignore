@@ -1,0 +1,9 @@
+.git
+tests
+homeassistant
+*.md
+stack.env
+stack.env.example
+.env
+__pycache__
+data

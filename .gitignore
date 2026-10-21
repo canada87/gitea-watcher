@@ -1,0 +1,14 @@
+# segreti
+stack.env
+.env
+*.env
+!stack.env.example
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# dati locali
+data/
+status.json

@@ -1,0 +1,39 @@
+# Automazione di avviso. In Home Assistant: Impostazioni -> Automazioni e scene
+# -> Crea automazione -> menu in alto a destra "Modifica in YAML" e incolla.
+# Sostituisci NOME con il nome del tuo servizio notify.mobile_app_<nome>.
+alias: Gitea watcher - avvisi
+description: Avvisa se ci sono problemi con i mirror Gitea o se il watcher non risponde
+mode: queued
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.gitea_watcher_problemi
+    attribute: problems
+    id: problemi
+  - trigger: state
+    entity_id: binary_sensor.gitea_watcher_problemi
+    to: unavailable
+    for: "00:30:00"
+    id: muto
+conditions: []
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: problemi
+          - condition: state
+            entity_id: binary_sensor.gitea_watcher_problemi
+            state: "on"
+        sequence:
+          - action: notify.mobile_app_NOME
+            data:
+              title: "Gitea: mirror da controllare"
+              message: >-
+                {{ state_attr('binary_sensor.gitea_watcher_problemi', 'problems') | join('\n') }}
+      - conditions:
+          - condition: trigger
+            id: muto
+        sequence:
+          - action: notify.mobile_app_NOME
+            data:
+              title: "Gitea watcher non risponde"
+              message: "Nessuna risposta dal watcher da 30 minuti."

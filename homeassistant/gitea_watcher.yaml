@@ -1,0 +1,56 @@
+# Sensori Home Assistant per gitea-watcher.
+# Si puo' usare come "package" (cartella packages/) oppure unire il contenuto
+# in configuration.yaml. Sostituisci IP_VM con l'IP della macchina dove gira il container.
+#
+# In secrets.yaml aggiungi (l'API_TOKEN e' quello di stack.env):
+#   gitea_watcher_auth: "Bearer <API_TOKEN>"
+
+rest:
+  - resource: http://IP_VM:8765/status
+    scan_interval: 600
+    timeout: 20
+    headers:
+      Authorization: !secret gitea_watcher_auth
+    sensor:
+      - name: "Gitea watcher repo mancanti"
+        unique_id: gitea_watcher_missing
+        value_template: "{{ value_json.totals.missing }}"
+        unit_of_measurement: "repo"
+        state_class: measurement
+      - name: "Gitea watcher mirror fermi"
+        unique_id: gitea_watcher_stale
+        value_template: "{{ value_json.totals.stale }}"
+        unit_of_measurement: "repo"
+        state_class: measurement
+      - name: "Gitea watcher repo in Gitea"
+        unique_id: gitea_watcher_gitea_repos
+        value_template: "{{ value_json.totals.gitea_repos }}"
+        unit_of_measurement: "repo"
+        state_class: measurement
+      - name: "Gitea watcher giorni alla scadenza token"
+        unique_id: gitea_watcher_token_days
+        value_template: >-
+          {{ value_json.totals.min_token_days
+             if value_json.totals.min_token_days is not none else 'unknown' }}
+        unit_of_measurement: "giorni"
+      - name: "Gitea watcher ultimo controllo"
+        unique_id: gitea_watcher_last_run
+        device_class: timestamp
+        value_template: "{{ value_json.last_run_utc }}"
+    binary_sensor:
+      - name: "Gitea watcher problemi"
+        unique_id: gitea_watcher_problems
+        device_class: problem
+        value_template: "{{ not value_json.healthy }}"
+        json_attributes:
+          - problems
+          - notes
+
+# Per forzare un controllo subito (ad esempio da un pulsante in dashboard):
+# azione  rest_command.gitea_watcher_refresh
+rest_command:
+  gitea_watcher_refresh:
+    url: http://IP_VM:8765/refresh
+    method: post
+    headers:
+      Authorization: !secret gitea_watcher_auth

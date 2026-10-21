@@ -1,0 +1,21 @@
+# Stack per Portainer (o `docker compose up -d --build` da riga di comando).
+# Le variabili vengono lette da stack.env: in Portainer si incollano nella
+# sezione "Environment variables" dello stack, da CLI si crea il file a partire
+# da stack.env.example. stack.env contiene segreti e NON va mai nel repository.
+services:
+  gitea-watcher:
+    build: .
+    image: gitea-watcher:0.1
+    container_name: gitea-watcher
+    restart: unless-stopped
+    env_file: stack.env
+    environment:
+      - TZ=Europe/Rome
+    ports:
+      - "8765:8080"   # porta host 8765 -> API del watcher (solo LAN/Tailscale)
+    volumes:
+      - watcher_data:/data
+    mem_limit: 128m
+
+volumes:
+  watcher_data:
